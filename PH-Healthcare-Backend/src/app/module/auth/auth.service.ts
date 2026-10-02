@@ -9,6 +9,7 @@ import {
 import config from "../../config";
 import { prisma } from "../../lib/prisma";
 import { jwtUtils } from "../../utils/jwt";
+import ejs from "ejs";
 import type {
   IGoogleLogin,
   ILoginUserPayload,
@@ -18,6 +19,11 @@ import type {
 // biome-ignore lint/style/useImportType: <useImportType>
 import { TokenPayload } from "google-auth-library";
 import { googleClient } from "../../lib/googleClient";
+import crypto from "crypto";
+import { redisClient } from "../../lib/redis";
+import { error } from "console";
+import { transporter } from "../../lib/nodemailer";
+import path from "path";
 
 const registerPatient = async (payload: IRegisterPatientPayload) => {
   const { name, password } = payload;
@@ -35,7 +41,10 @@ const registerPatient = async (payload: IRegisterPatientPayload) => {
     throw new Error("User with this email already exists");
   }
 
-  const hashedPassword = await bcrypt.hash(password, 8);
+  const hashedPassword = await bcrypt.hash(
+    password,
+    Number(config.bcrypt_salt_rounds),
+  );
 
   const createdUser = await prisma.user.create({
     data: {
@@ -332,10 +341,130 @@ const googleLogin = async (payload: IGoogleLogin) => {
   };
 };
 
+const forgotPassword = async (payload: any) => {
+  const { email } = payload;
+  const isUserExist = await prisma.user.findUnique({
+    where: {
+      email,
+    },
+  });
+  if (!isUserExist) {
+    throw new Error("User does'n exist");
+  }
+
+  if (isUserExist.status === "BLOCKED") {
+    throw new Error("User is Blocked");
+  }
+
+  if (!isUserExist.emailVerified) {
+    throw new Error("User not Verified");
+  }
+
+  if (isUserExist.isDeleted || isUserExist.status === "DELETED") {
+    throw new Error("User is Deleted");
+  }
+  if (isUserExist.googleId && isUserExist.authProvider === "GOOGLE") {
+    throw new Error("User has Account with Google");
+  }
+  const otp = crypto.randomInt(100000, 1000000);
+  const key = `forgot-password-otp:${isUserExist.email}`;
+
+  await redisClient.set(key, otp, {
+    expiration: {
+      type: "EX",
+      value: 60 * 5,
+    },
+  });
+  const templatePath = path.join(
+    process.cwd(),
+    "src/app/template/forgot-password.ejs",
+  );
+  const html = await ejs.renderFile(templatePath, {
+    name: isUserExist.name,
+    OTP: otp,
+    email: config.sender_email,
+  });
+  await transporter.sendMail({
+    from: config.sender_email,
+    to: isUserExist.email,
+    subject: "Fotgot Password",
+    // text: `your otp ${otp}`,
+    html,
+  });
+};
+const resetPassword = async (payload: any) => {
+  const { email, otp, newPassword } = payload;
+  const isUserExist = await prisma.user.findUnique({
+    where: {
+      email,
+    },
+  });
+  if (!isUserExist) {
+    throw new Error("User does'n exist");
+  }
+
+  if (isUserExist.status === "BLOCKED") {
+    throw new Error("User is Blocked");
+  }
+
+  if (!isUserExist.emailVerified) {
+    throw new Error("User not Verified");
+  }
+
+  if (isUserExist.isDeleted || isUserExist.status === "DELETED") {
+    throw new Error("User is Deleted");
+  }
+  if (isUserExist.googleId && isUserExist.authProvider === "GOOGLE") {
+    throw new Error("User has Account with Google");
+  }
+
+  const key = `forgot-password-otp:${isUserExist.email}`;
+
+  const redisOtp = await redisClient.get(key);
+  if (!redisOtp) {
+    throw new Error("Redis otp not found");
+  }
+
+  const hashNewPassword = await bcrypt.hash(
+    newPassword,
+    Number(config.bcrypt_salt_rounds),
+  );
+
+  await prisma.user.update({
+    where: {
+      email: isUserExist.email,
+    },
+    data: {
+      password: hashNewPassword,
+    },
+  });
+
+  await redisClient.del([key]);
+
+  const templatePath = path.join(
+    process.cwd(),
+    "src/app/template/reset-password.ejs",
+  );
+  const html = await ejs.renderFile(templatePath, {
+    name: isUserExist.name,
+    email: config.sender_email,
+  });
+
+  await transporter.sendMail({
+    from: config.sender_email,
+    to: isUserExist.email,
+    subject: "Password change",
+    // text: `your otp ${otp}`,
+    html,
+  });
+};
+
 export const AuthService = {
   registerPatient,
   loginUser,
   getMe,
   refreshToken,
   googleLogin,
+  forgotPassword,
+  resetPassword,
 };
