@@ -1,0 +1,175 @@
+// Billing: services, invoices, invoice lines, payments.
+//
+// Money rule (§58): every total is computed on the server from the line items.
+// Invoice.discountAmount, Invoice.taxAmount and the derived totals are written by
+// the billing service inside a transaction, never taken from a request body.
+
+model Service {
+  id          String  @id @default(cuid())
+  code        String  @unique
+  name        String
+  description String?
+  /// Free-text grouping, e.g. "CONSULTATION", "DIAGNOSTICS", "PROCEDURE".
+  category    String?
+
+  healthcareCenterId String
+  healthcareCenter   HealthcareCenter @relation(fields: [healthcareCenterId], references: [id], onDelete: Cascade)
+
+  price               Decimal @default(0) @db.Decimal(12, 2)
+  /// Minutes of chair time, used to warn when a booking exceeds the slot.
+  durationMinutes     Int?
+  /// Whether this service is billable when booked through the appointment flow.
+  isBookable          Boolean @default(true)
+  /// Requires a doctor's order before it can be performed.
+  requiresDoctorOrder Boolean @default(false)
+
+  status RecordStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  invoiceItems InvoiceItem[]
+
+  @@unique([healthcareCenterId, name], name: "uq_service_center_name")
+  @@index([healthcareCenterId, status], map: "idx_service_center_status")
+  @@map("services")
+}
+
+model Invoice {
+  id            String @id @default(cuid())
+  /// Printed on the document, e.g. "INV-2026-000045".
+  invoiceNumber String @unique
+
+  healthcareCenterId String
+  healthcareCenter   HealthcareCenter @relation(fields: [healthcareCenterId], references: [id], onDelete: Cascade)
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
+
+  appointmentId String?
+  appointment   Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+
+  /// Doctor whose fee the consultation line belongs to; used for doctor earnings.
+  doctorId String?
+  doctor   Doctor? @relation(fields: [doctorId], references: [id], onDelete: SetNull)
+
+  status InvoiceStatus @default(DRAFT)
+
+  issuedAt        DateTime?
+  dueAt           DateTime?
+  cancelledAt     DateTime?
+  cancelledReason String?
+
+  // ── Money. Recomputed server-side on every write; never trusted from input. ──
+  subtotalAmount  Decimal @default(0) @db.Decimal(12, 2)
+  discountPercent Decimal @default(0) @db.Decimal(5, 2)
+  discountAmount  Decimal @default(0) @db.Decimal(12, 2)
+  taxPercent      Decimal @default(0) @db.Decimal(5, 2)
+  taxAmount       Decimal @default(0) @db.Decimal(12, 2)
+  totalAmount     Decimal @default(0) @db.Decimal(12, 2)
+  paidAmount      Decimal @default(0) @db.Decimal(12, 2)
+  refundedAmount  Decimal @default(0) @db.Decimal(12, 2)
+  /// totalAmount - paidAmount + refundedAmount, maintained server-side so the
+  /// dashboard can filter outstanding invoices without aggregating payments.
+  dueAmount       Decimal @default(0) @db.Decimal(12, 2)
+
+  currency String @default("USD")
+
+  notes              String?
+  terms              String?
+  /// Set when the invoice came from a lab request, to keep the two traceable.
+  sourceLabRequestId String?
+
+  /// Set once the invoice can no longer be edited, so line items stay immutable
+  /// against a finalised total.
+  isLocked Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items    InvoiceItem[]
+  payments Payment[]
+
+  @@index([healthcareCenterId, status], map: "idx_invoice_center_status")
+  @@index([patientId, createdAt], map: "idx_invoice_patient")
+  @@index([dueAt, status], map: "idx_invoice_due")
+  @@index([doctorId], map: "idx_invoice_doctor")
+  @@map("invoices")
+}
+
+model InvoiceItem {
+  id   String @id @default(cuid())
+  code String @unique
+
+  invoiceId String
+  invoice   Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  serviceId String?
+  service   Service? @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+
+  medicineId String?
+  medicine   Medicine? @relation(fields: [medicineId], references: [id], onDelete: SetNull)
+
+  labRequestItemId String?
+
+  /// Line description is a snapshot; renaming a service must not rewrite history.
+  description String
+  /// Optional second line for dosage/form, printed under the description.
+  detail      String?
+
+  quantity       Decimal @default(1) @db.Decimal(12, 2)
+  unitPrice      Decimal @default(0) @db.Decimal(12, 2)
+  discountAmount Decimal @default(0) @db.Decimal(12, 2)
+  taxPercent     Decimal @default(0) @db.Decimal(5, 2)
+  taxAmount      Decimal @default(0) @db.Decimal(12, 2)
+  lineTotal      Decimal @default(0) @db.Decimal(12, 2)
+
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([invoiceId], map: "idx_invoice_item_invoice")
+  @@map("invoice_items")
+}
+
+model Payment {
+  id            String @id @default(cuid())
+  paymentNumber String @unique
+
+  healthcareCenterId String
+  healthcareCenter   HealthcareCenter @relation(fields: [healthcareCenterId], references: [id], onDelete: Cascade)
+
+  invoiceId String
+  invoice   Invoice @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
+
+  amount         Decimal       @db.Decimal(12, 2)
+  /// Amount returned against this payment. A refund is a new row rather than an
+  /// edit, so the original receipt stays accurate.
+  refundedAmount Decimal       @default(0) @db.Decimal(12, 2)
+  currency       String        @default("USD")
+  method         PaymentMethod
+  status         PaymentStatus @default(PENDING)
+
+  /// Gateway reference for card/online/bank transfers.
+  transactionId String?
+  /// Last-4 only. Full card numbers are never stored — see §38.
+  cardLast4     String?
+  bankName      String?
+  notes         String?
+  failureReason String?
+
+  paidAt       DateTime?
+  refundedAt   DateTime?
+  receivedById String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([healthcareCenterId, status, paidAt], map: "idx_payment_center_status")
+  @@index([invoiceId], map: "idx_payment_invoice")
+  @@index([patientId, createdAt], map: "idx_payment_patient")
+  @@map("payments")
+}

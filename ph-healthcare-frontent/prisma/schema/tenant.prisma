@@ -1,0 +1,69 @@
+// The tenant boundary. A HealthcareCenter is one clinic; nearly every other model
+// carries healthcareCenterId so a request can be scoped to exactly one clinic.
+//
+// SUPERADMIN users have healthcareCenterId = null, which is what marks them as
+// platform-level rather than centre-scoped. See src/lib/authz/scope.ts.
+
+model HealthcareCenter {
+  id     String     @id @default(cuid())
+  /// Human-facing reference, e.g. "HC-0001". Unique across the platform.
+  code   String     @unique
+  name   String
+  slug   String     @unique
+  status UserStatus @default(ACTIVE)
+
+  email              String?
+  phone              String?
+  website            String?
+  addressLine1       String?
+  addressLine2       String?
+  city               String?
+  state              String?
+  postalCode         String?
+  country            String    @default("Bangladesh")
+  /// IANA zone, e.g. "Asia/Dhaka". All appointment timestamps are stored in UTC
+  /// and rendered in this zone, so the slot engine stays timezone-correct.
+  timezone           String    @default("UTC")
+  /// ISO currency code. Money columns are Decimal(12,2); there is no FX conversion.
+  currency           String    @default("USD")
+  logoUrl            String?
+  registrationNumber String?
+  taxId              String?
+  taxPercentage      Decimal   @default(0) @db.Decimal(5, 2)
+  /// Plan tier, for deployments that meter centres. Null on single-tenant setups.
+  subscriptionPlan   String?
+  subscriptionEndsAt DateTime?
+  description        String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users           User[]
+  departments     Department[]
+  doctors         Doctor[]
+  patients        Patient[]
+  staff           Staff[]
+  doctorSchedules DoctorSchedule[]
+  doctorLeaves    DoctorLeave[]
+  appointments    Appointment[]
+  medicalRecords  MedicalRecord[]
+  diagnoses       Diagnosis[]
+  prescriptions   Prescription[]
+  medicines       Medicine[]
+  medicineStock   MedicineStock[]
+  labCategories   LaboratoryCategory[]
+  labTests        LaboratoryTest[]
+  labRequests     LabRequest[]
+  labResults      LabResult[]
+  services        Service[]
+  invoices        Invoice[]
+  payments        Payment[]
+  notifications   Notification[]
+  reviews         Review[]
+  documents       MedicalDocument[]
+  auditLogs       AuditLog[]
+  settings        SystemSetting[]
+
+  @@index([status], map: "idx_center_status")
+  @@map("healthcare_centers")
+}

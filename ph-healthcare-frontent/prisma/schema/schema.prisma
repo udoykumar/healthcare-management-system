@@ -1,0 +1,15 @@
+// Generator + datasource only. The models are split across sibling files in this
+// directory; Prisma merges them into one schema.
+
+generator client {
+  provider = "prisma-client"
+  // Resolved relative to prisma/schema/, hence two levels up.
+  output = "../../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  // Prisma 7 no longer accepts `url` here. The connection string lives in
+  // prisma.config.ts and is handed to the client through a driver adapter —
+  // see https://pris.ly/d/config-datasource
+}

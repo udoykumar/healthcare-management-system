@@ -1,0 +1,350 @@
+// Every enum in the system. Kept in one file so the vocabulary of the domain is
+// reviewable in a single place.
+
+/// Platform-wide roles. Tenant membership is expressed by User.roleId, not by a
+/// column on User, so permissions can be edited without a migration.
+enum RoleKey {
+  SUPERADMIN
+  ADMIN
+  DOCTOR
+  PATIENT
+}
+
+/// Lifecycle of an account. DELETED is a terminal state; see User.isDeleted for
+/// the soft-delete flag that coexists with it.
+enum UserStatus {
+  PENDING_VERIFICATION
+  ACTIVE
+  INACTIVE
+  BLOCKED
+  DELETED
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+  UNDISCLOSED
+}
+
+enum BloodGroup {
+  A_POSITIVE
+  A_NEGATIVE
+  B_POSITIVE
+  B_NEGATIVE
+  AB_POSITIVE
+  AB_NEGATIVE
+  O_POSITIVE
+  O_NEGATIVE
+  UNKNOWN
+}
+
+enum ContactRelationship {
+  SPOUSE
+  PARENT
+  CHILD
+  SIBLING
+  FRIEND
+  COLLEAGUE
+  CAREGIVER
+  OTHER
+}
+
+/// Shared ACTIVE/INACTIVE switch for the catalogue-like tables (departments,
+/// services, medicines, lab tests...). Deleting a clinical record is not modelled
+/// as a hard delete; rows are deactivated instead.
+enum RecordStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum AppointmentStatus {
+  PENDING
+  CONFIRMED
+  CHECKED_IN
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+  RESCHEDULED
+}
+
+enum AppointmentType {
+  IN_PERSON
+  ONLINE
+  FOLLOW_UP
+  EMERGENCY
+}
+
+/// Who cancelled, used to decide whether the cancellation policy applies.
+enum CancellationReason {
+  PATIENT_REQUEST
+  DOCTOR_UNAVAILABLE
+  CENTER_CLOSED
+  NO_SHOW
+  OTHER
+}
+
+/// Practitioner-recorded billing status for the consultation itself. The
+/// authoritative money state lives on Invoice.paymentStatus.
+enum AppointmentPaymentStatus {
+  NOT_REQUIRED
+  UNPAID
+  PARTIAL
+  PAID
+  REFUNDED
+}
+
+/// ISO-8601 day of week, 0 = Sunday. Matches Date.prototype.getDay(), which keeps
+/// the slot engine free of a locale dependency.
+enum DayOfWeek {
+  SUNDAY
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+}
+
+enum LeaveType {
+  SICK
+  ANNUAL
+  UNPAID
+  CONFERENCE
+  OTHER
+}
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+/// Coded diagnoses. ICD-10 codes are stored in Diagnosis.icd10Code; the type
+/// below describes the clinical role of the entry, not a coding system.
+enum DiagnosisType {
+  PRIMARY
+  SECONDARY
+  DIFFERENTIAL
+  COMPLICATION
+}
+
+enum Severity {
+  MILD
+  MODERATE
+  SEVERE
+  CRITICAL
+}
+
+enum MedicationRoute {
+  ORAL
+  IV
+  IM
+  SUBCUTANEOUS
+  TOPICAL
+  INHALATION
+  RECTAL
+  OPHTHALMIC
+  OTIC
+  TRANSDERMAL
+  OTHER
+}
+
+enum MedicationFrequency {
+  ONCE_DAILY
+  TWICE_DAILY
+  THREE_TIMES_DAILY
+  FOUR_TIMES_DAILY
+  EVERY_4_HOURS
+  EVERY_6_HOURS
+  EVERY_8_HOURS
+  AS_NEEDED
+  AT_BEDTIME
+  BEFORE_MEALS
+  AFTER_MEALS
+  WITH_MEALS
+  OTHER
+}
+
+enum DosageForm {
+  TABLET
+  CAPSULE
+  SYRUP
+  SUSPENSION
+  INJECTION
+  CREAM
+  OINTMENT
+  DROPS
+  INHALER
+  PATCH
+  SUPPOSITORY
+  OTHER
+}
+
+enum PrescriptionStatus {
+  DRAFT
+  ISSUED
+  CANCELLED
+}
+
+enum LabRequestStatus {
+  REQUESTED
+  SAMPLE_COLLECTED
+  PROCESSING
+  COMPLETED
+  CANCELLED
+}
+
+enum LabPriority {
+  ROUTINE
+  URGENT
+  STAT
+}
+
+/// Set by the lab when a value falls outside the parameter's reference range.
+enum AbnormalFlag {
+  NONE
+  LOW
+  HIGH
+  CRITICAL_LOW
+  CRITICAL_HIGH
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PAID
+  PARTIALLY_PAID
+  OVERDUE
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  BANK_TRANSFER
+  MOBILE_PAYMENT
+  ONLINE_PAYMENT
+  INSURANCE
+}
+
+enum NotificationType {
+  APPOINTMENT_REMINDER
+  APPOINTMENT_CONFIRMATION
+  APPOINTMENT_CANCELLATION
+  APPOINTMENT_RESCHEDULED
+  PRESCRIPTION_AVAILABLE
+  LAB_REPORT_AVAILABLE
+  PAYMENT_REMINDER
+  PAYMENT_RECEIPT
+  ACCOUNT_VERIFICATION
+  PASSWORD_RESET
+  SYSTEM
+}
+
+/// Drives the notification channel. EMAIL is queued by the email abstraction;
+/// IN_APP is the in-database bell.
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+}
+
+enum DocumentCategory {
+  MEDICAL_REPORT
+  PRESCRIPTION
+  LAB_REPORT
+  INSURANCE
+  IDENTITY
+  REFERRAL
+  CONSENT_FORM
+  OTHER
+}
+
+enum ReviewStatus {
+  PENDING
+  PUBLISHED
+  HIDDEN
+}
+
+enum AuditAction {
+  LOGIN
+  LOGOUT
+  LOGIN_FAILED
+  PASSWORD_CHANGED
+  PASSWORD_RESET_REQUESTED
+  PASSWORD_RESET_COMPLETED
+  EMAIL_VERIFIED
+  USER_CREATED
+  USER_UPDATED
+  USER_ROLE_CHANGED
+  USER_STATUS_CHANGED
+  USER_DELETED
+  CENTER_CREATED
+  CENTER_UPDATED
+  CENTER_STATUS_CHANGED
+  PATIENT_CREATED
+  PATIENT_UPDATED
+  PATIENT_DELETED
+  DOCTOR_CREATED
+  DOCTOR_UPDATED
+  DOCTOR_STATUS_CHANGED
+  STAFF_CREATED
+  STAFF_UPDATED
+  DEPARTMENT_CREATED
+  DEPARTMENT_UPDATED
+  DEPARTMENT_DELETED
+  APPOINTMENT_CREATED
+  APPOINTMENT_UPDATED
+  APPOINTMENT_CANCELLED
+  APPOINTMENT_RESCHEDULED
+  APPOINTMENT_STATUS_CHANGED
+  SCHEDULE_UPDATED
+  LEAVE_CREATED
+  MEDICAL_RECORD_CREATED
+  MEDICAL_RECORD_UPDATED
+  DIAGNOSIS_CREATED
+  PRESCRIPTION_CREATED
+  MEDICINE_CREATED
+  MEDICINE_UPDATED
+  MEDICINE_STOCK_ADJUSTED
+  LAB_TEST_CREATED
+  LAB_TEST_UPDATED
+  LAB_REQUEST_CREATED
+  LAB_RESULT_CREATED
+  SERVICE_CREATED
+  SERVICE_UPDATED
+  INVOICE_CREATED
+  INVOICE_UPDATED
+  PAYMENT_CREATED
+  PAYMENT_REFUNDED
+  REVIEW_CREATED
+  REVIEW_MODERATED
+  DOCUMENT_UPLOADED
+  DOCUMENT_DELETED
+  SETTINGS_UPDATED
+  PERMISSION_CHANGED
+  ACCESS_DENIED
+}
+
+enum SettingValueType {
+  STRING
+  NUMBER
+  BOOLEAN
+  JSON
+}
+
+enum TokenPurpose {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+  INVITATION
+}

@@ -1,0 +1,101 @@
+// Authentication.
+//
+// Sessions are Auth.js JWT sessions, so there is deliberately no Session/Account
+// table: the token is the session, and revocation is handled by the fields below
+// rather than by deleting a row.
+//
+// Access is re-checked against the database on every server-side request via
+// src/lib/authz/require-session.ts. That is what makes BLOCKED accounts and role
+// changes take effect immediately instead of when a token happens to expire.
+
+model User {
+  id            String    @id @default(cuid())
+  /// Platform-unique across centres, e.g. "USR-000042".
+  code          String    @unique
+  name          String
+  /// Nullable: Auth.js requires a nullable unique email on User, and we allow
+  /// invited staff who have not supplied an address yet.
+  email         String?   @unique
+  emailVerified DateTime?
+  /// bcrypt hash. Never selected into an API response — see
+  /// src/lib/authz/session.ts, which projects the public user shape.
+  passwordHash  String?
+  image         String?
+  phone         String?
+
+  status             UserStatus @default(PENDING_VERIFICATION)
+  /// Soft delete. Filtered in src/lib/db/tenant.ts on every read.
+  isDeleted          Boolean    @default(false)
+  deletedAt          DateTime?
+  /// Soft-deleted accounts keep their email so it is never handed to a new
+  /// person; login rejects them via status/isDeleted.
+mustChangePassword Boolean  @default(false)
+  /// One-time code emailed to a newly invited staff member or doctor, hashed. Kept
+  /// separate from passwordHash so activating an invite never disturbs the
+  /// password, and so the two can expire independently.
+  inviteCodeHash   String?
+  lastLoginAt      DateTime?
+  lastLoginIp        String?
+  /// Bumped to invalidate every issued session for this user (used on block,
+  /// delete, and forced logout-everywhere).
+  sessionVersion     Int        @default(1)
+  failedLoginCount   Int        @default(0)
+  lockedUntil        DateTime?
+
+  roleId String?
+  role   Role?   @relation(fields: [roleId], references: [id], onDelete: SetNull)
+
+  /// Null means platform-level (SUPERADMIN). Non-null scopes every query to that
+  /// centre.
+  healthcareCenterId String?
+  healthcareCenter   HealthcareCenter? @relation(fields: [healthcareCenterId], references: [id], onDelete: Restrict)
+
+  lastLoginCenterId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Profiles. Each is optional 1-1, exactly one is populated for a given role.
+  patient Patient?
+  doctor  Doctor?
+  staff   Staff?
+
+  notifications     Notification[]
+  documentsUploaded MedicalDocument[] @relation("UploadedBy")
+  auditLogs         AuditLog[]        @relation("AuditActor")
+  reviewComments    Review[]          @relation("ReviewModerator")
+
+  @@index([healthcareCenterId], map: "idx_user_center")
+  @@index([roleId], map: "idx_user_role")
+  @@index([status, isDeleted], map: "idx_user_status_deleted")
+  @@map("users")
+}
+
+/// One-time tokens for email verification, password reset, and staff invitations.
+/// The plaintext token is never stored — only its SHA-256 hash — so a leaked
+/// table cannot be replayed against a live account.
+model VerificationToken {
+  id        String       @id @default(cuid())
+  /// SHA-256 hex digest of the raw token.
+  tokenHash String       @unique
+  email     String
+  purpose   TokenPurpose
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime     @default(now())
+
+  @@index([email, purpose], map: "idx_verification_token_email")
+  @@index([expiresAt], map: "idx_verification_token_expires")
+  @@map("verification_tokens")
+}
+
+/// Password history hash. Reused passwords are refused on change/reset.
+model PasswordHistory {
+  id           String   @id @default(cuid())
+  userId       String
+  passwordHash String
+  createdAt    DateTime @default(now())
+
+  @@index([userId, createdAt], map: "idx_password_history_user")
+  @@map("password_history")
+}

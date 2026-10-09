@@ -1,0 +1,58 @@
+// Role-Based Access Control.
+//
+// Role and Permission are tables rather than enums on purpose: SUPERADMIN must be
+// able to edit what each role may do at runtime (§7 "Manage roles and
+// permissions") without a migration. RoleKey and the permission codes are still
+// validated by the TypeScript union types in src/types/rbac.ts, so the database
+// stays flexible while the code stays type-safe.
+
+model Role {
+  id          String   @id @default(cuid())
+  key         RoleKey  @unique
+  name        String
+  description String?
+  /// System roles ship with the product and cannot be deleted. RoleKey has no
+  /// surrogate id, so this flag is what protects the built-in set.
+  isSystem    Boolean  @default(false)
+  /// Grants every permission implicitly. Kept on the role row instead of being
+  /// re-derived from RoleKey so it stays true even if permission rows are edited.
+  isSuperuser Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users           User[]
+  rolePermissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String   @id @default(cuid())
+  /// Dotted resource:action code, e.g. "appointment:create". Seeded by
+  /// prisma/seed.ts and referenced from src/lib/permissions.ts.
+  code        String   @unique
+  resource    String
+  action      String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  rolePermissions RolePermission[]
+
+  @@index([resource], map: "idx_permission_resource")
+  @@map("permissions")
+}
+
+model RolePermission {
+  id           String   @id @default(cuid())
+  roleId       String
+  permissionId String
+  createdAt    DateTime @default(now())
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@index([permissionId], map: "idx_role_permission_permission")
+  @@map("role_permissions")
+}

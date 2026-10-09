@@ -1,0 +1,260 @@
+// Laboratory: catalogue, test parameters, requests, and results.
+//
+// Workflow (§19): REQUESTED → SAMPLE_COLLECTED → PROCESSING → COMPLETED, with
+// CANCELLED as an exit. A result is only written against a request, and only by
+// staff who are not the requesting clinician — see
+// src/lib/authz/clinical.ts.
+
+model LaboratoryCategory {
+  id          String  @id @default(cuid())
+  code        String  @unique
+  name        String
+  description String?
+
+  healthcareCenterId String
+  healthcareCenter   HealthcareCenter @relation(fields: [healthcareCenterId], references: [id], onDelete: Cascade)
+
+  /// Optional link so a test can be scoped to a department's services.
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+
+  sortOrder Int          @default(0)
+  status    RecordStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tests LaboratoryTest[]
+
+  @@unique([healthcareCenterId, name], name: "uq_lab_category_center_name")
+  @@map("laboratory_categories")
+}
+
+model LaboratoryTest {
+  id          String  @id @default(cuid())
+  code        String  @unique
+  name        String
+  shortName   String?
+  description String?
+
+  healthcareCenterId String
+  healthcareCenter   HealthcareCenter @relation(fields: [healthcareCenterId], references: [id], onDelete: Cascade)
+
+  categoryId String?
+  category   LaboratoryCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  price                   Decimal @default(0) @db.Decimal(12, 2)
+  /// Turnaround target in hours, used to flag overdue requests.
+  turnaroundHours         Int     @default(24)
+  /// Sample type shown to the patient, e.g. "EDTA whole blood".
+  sampleType              String?
+  sampleContainer         String?
+  preparationInstructions String?
+  /// Whether the test needs the patient to fast.
+  requiresFasting         Boolean @default(false)
+  method                  String?
+
+  status RecordStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  parameters   LabParameter[]
+  requestItems LabRequestItem[]
+  results      LabResult[]
+
+  @@unique([healthcareCenterId, name], name: "uq_lab_test_center_name")
+  @@index([healthcareCenterId, status], map: "idx_lab_test_center_status")
+  @@index([categoryId], map: "idx_lab_test_category")
+  @@map("laboratory_tests")
+}
+
+/// One analyte of a test, e.g. Hemoglobin inside a CBC, with its reference range.
+model LabParameter {
+  id   String @id @default(cuid())
+  code String @unique
+
+  testId String
+  test   LaboratoryTest @relation(fields: [testId], references: [id], onDelete: Cascade)
+
+  name      String
+  shortName String?
+  unit      String?
+
+  /// Reference range as entered by the lab. Held as text because real ranges are
+  /// messy ("13.0-17.0", "< 5", "70-110") and differ by analyser.
+  referenceRangeLow  Decimal? @db.Decimal(12, 4)
+  referenceRangeHigh Decimal? @db.Decimal(12, 4)
+  referenceRangeText String?
+  /// Values outside these bounds set CRITICAL_LOW / CRITICAL_HIGH rather than
+  /// plain LOW / HIGH.
+  criticalRangeLow   Decimal? @db.Decimal(12, 4)
+  criticalRangeHigh  Decimal? @db.Decimal(12, 4)
+  /// True when a value below the reference range is itself abnormal.
+  lowIsAbnormal      Boolean  @default(true)
+  highIsAbnormal     Boolean  @default(true)
+  /// Reported as a discrete value rather than a number (e.g. "Negative").
+  isQualitative      Boolean  @default(false)
+  decimalPlaces      Int?
+  sortOrder          Int      @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  results LabResultValue[]
+
+  @@unique([testId, name], name: "uq_lab_parameter_test_name")
+  @@index([testId, sortOrder], map: "idx_lab_parameter_test")
+  @@map("lab_parameters")
+}
+
+model LabRequest {
+  id   String @id @default(cuid())
+  code String @unique
+
+  healthcareCenterId String
+  healthcareCenter   HealthcareCenter @relation(fields: [healthcareCenterId], references: [id], onDelete: Cascade)
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
+
+  /// Requesting clinician. Kept for the "who ordered this" line on the report.
+  doctorId String
+  doctor   Doctor @relation(fields: [doctorId], references: [id], onDelete: Restrict)
+
+  medicalRecordId String?
+  medicalRecord   MedicalRecord? @relation(fields: [medicalRecordId], references: [id], onDelete: SetNull)
+
+  appointmentId String?
+  appointment   Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+
+  status   LabRequestStatus @default(REQUESTED)
+  priority LabPriority      @default(ROUTINE)
+
+  clinicalNotes        String?
+  /// Diagnosis or reason given on the report header.
+  provisionalDiagnosis String?
+
+  requestedAt         DateTime  @default(now())
+  sampleCollectedAt   DateTime?
+  sampleCollectedBy   String?
+  processingStartedAt DateTime?
+  completedAt         DateTime?
+  cancelledAt         DateTime?
+  cancelledReason     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items   LabRequestItem[]
+  results LabResult[]
+
+  @@index([healthcareCenterId, status, requestedAt], map: "idx_lab_request_center_status")
+  @@index([patientId, requestedAt], map: "idx_lab_request_patient")
+  @@index([doctorId, status], map: "idx_lab_request_doctor")
+  @@map("lab_requests")
+}
+
+/// A line on a request. A single request may bundle several tests.
+model LabRequestItem {
+  id   String @id @default(cuid())
+  code String @unique
+
+  labRequestId String
+  labRequest   LabRequest @relation(fields: [labRequestId], references: [id], onDelete: Cascade)
+
+  testId String
+  test   LaboratoryTest @relation(fields: [testId], references: [id], onDelete: Restrict)
+
+  /// Price captured at request time; the invoice is raised from this, not from
+  /// the catalogue's current price.
+  price       Decimal          @default(0) @db.Decimal(12, 2)
+  isBilled    Boolean          @default(false)
+  status      LabRequestStatus @default(REQUESTED)
+  completedAt DateTime?
+
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  results LabResult[]
+
+  @@unique([labRequestId, testId], name: "uq_lab_request_item_test")
+  @@index([testId], map: "idx_lab_request_item_test")
+  @@map("lab_request_items")
+}
+
+/// The signed-off result for one test on one request.
+model LabResult {
+  id   String @id @default(cuid())
+  code String @unique
+
+  healthcareCenterId String
+  healthcareCenter   HealthcareCenter @relation(fields: [healthcareCenterId], references: [id], onDelete: Cascade)
+
+  labRequestId String
+  labRequest   LabRequest @relation(fields: [labRequestId], references: [id], onDelete: Cascade)
+
+  labRequestItemId String?
+  labRequestItem   LabRequestItem? @relation(fields: [labRequestItemId], references: [id], onDelete: SetNull)
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
+
+  testId String
+  test   LaboratoryTest @relation(fields: [testId], references: [id], onDelete: Restrict)
+
+  /// Technician who performed and verified the test.
+  performedById   String?
+  performedByName String?
+  /// Pathologist/lab tech who verified the result before publication.
+  verifiedById    String?
+  verifiedByName  String?
+  verifiedAt      DateTime?
+
+  overallStatus AbnormalFlag @default(NONE)
+  notes         String?
+  /// Free-text summary printed at the top of the report.
+  summary       String?
+
+  reportedAt DateTime @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  values LabResultValue[]
+
+  @@index([patientId, reportedAt], map: "idx_lab_result_patient")
+  @@index([labRequestId], map: "idx_lab_result_request")
+  @@index([healthcareCenterId, reportedAt], map: "idx_lab_result_center")
+  @@map("lab_results")
+}
+
+model LabResultValue {
+  id   String @id @default(cuid())
+  code String @unique
+
+  labResultId String
+  labResult   LabResult @relation(fields: [labResultId], references: [id], onDelete: Cascade)
+
+  parameterId String
+  parameter   LabParameter @relation(fields: [parameterId], references: [id], onDelete: Restrict)
+
+  /// Parameter name at the time of reporting, so a later catalogue edit does not
+  /// rewrite a published report.
+  parameterName      String
+  /// Numeric reading. Null for qualitative results, which use resultText.
+  resultValue        Decimal?     @db.Decimal(12, 4)
+  resultText         String?
+  unit               String?
+  referenceRangeText String?
+  abnormalFlag       AbnormalFlag @default(NONE)
+
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([labResultId, parameterId], name: "uq_lab_result_value_parameter")
+  @@index([parameterId], map: "idx_lab_result_value_parameter")
+  @@map("lab_result_values")
+}

@@ -1,0 +1,208 @@
+// Notifications, reviews, documents, audit log, and per-centre settings.
+
+// ─── Notifications ────────────────────────────────────────────────────────────
+
+model Notification {
+  id   String @id @default(cuid())
+  code String @unique
+
+  /// The account being notified. Not Patient/Doctor: notifications are addressed
+  /// to login accounts, which is what the bell in the top nav reads.
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  healthcareCenterId String
+  healthcareCenter   HealthcareCenter @relation(fields: [healthcareCenterId], references: [id], onDelete: Cascade)
+
+  type    NotificationType
+  channel NotificationChannel @default(IN_APP)
+
+  title      String
+  body       String?
+  /// Route the client navigates to when the notification is clicked, e.g.
+  /// "/dashboard/patient/appointments". A path, never an arbitrary URL.
+  actionUrl  String?
+  /// Set on IN_APP rows once shown; EMAIL rows are marked sent instead.
+  readAt     DateTime?
+  emailedAt  DateTime?
+  emailError String?
+
+  /// Event key used to avoid sending the same reminder twice, e.g.
+  /// "appointment-reminder:24h:<appointmentId>". Unique per user.
+  dedupeKey String?
+
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, dedupeKey], name: "uq_notification_user_dedupe")
+  @@index([userId, readAt, createdAt], map: "idx_notification_user_unread")
+  @@index([healthcareCenterId, createdAt], map: "idx_notification_center")
+  @@map("notifications")
+}
+
+// ─── Reviews ──────────────────────────────────────────────────────────────────
+
+model Review {
+  id   String @id @default(cuid())
+  code String @unique
+
+  healthcareCenterId String
+  healthcareCenter   HealthcareCenter @relation(fields: [healthcareCenterId], references: [id], onDelete: Cascade)
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  doctorId String
+  doctor   Doctor @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+
+  /// One review per completed appointment — enforced by the unique constraint on
+  /// appointmentId plus the status check in the service layer.
+  appointmentId String
+  appointment   Appointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+
+  rating  Int
+  comment String?
+
+  status           ReviewStatus @default(PUBLISHED)
+  /// Why a moderator hid it.
+  moderationReason String?
+  moderatedById    String?
+  moderatedBy      User?        @relation("ReviewModerator", fields: [moderatedById], references: [id], onDelete: SetNull)
+  moderatedAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([appointmentId], name: "uq_review_appointment")
+  @@index([doctorId, status, createdAt], map: "idx_review_doctor_status")
+  @@index([patientId], map: "idx_review_patient")
+  @@index([healthcareCenterId, status], map: "idx_review_center_status")
+  @@map("reviews")
+}
+
+// ─── Documents ────────────────────────────────────────────────────────────────
+
+/// Metadata for an uploaded file. The bytes live in private storage and are only
+/// ever served through an authorised route handler — never from a public URL.
+/// See src/lib/storage/.
+model MedicalDocument {
+  id   String @id @default(cuid())
+  code String @unique
+
+  healthcareCenterId String
+  healthcareCenter   HealthcareCenter @relation(fields: [healthcareCenterId], references: [id], onDelete: Cascade)
+
+  /// Optional link to a specific patient. A centre-level document (e.g. a licence)
+  /// has no patient.
+  patientId String?
+  patient   Patient? @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  category    DocumentCategory
+  title       String
+  description String?
+
+  fileName      String
+  /// MIME type as supplied by the client, sanitised to an allow-list.
+  mimeType      String
+  /// Bytes. Validated against MAX_DOCUMENT_BYTES before the upload starts.
+  sizeBytes     Int
+  /// Opaque key in private storage. Deliberately not a URL.
+  storageKey    String  @unique
+  storageBucket String?
+
+  patientIdForUpload String?
+
+  uploadedById String?
+  uploadedBy   User?   @relation("UploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  appointmentId String?
+  appointment   Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+
+  medicalRecordId String?
+  medicalRecord   MedicalRecord? @relation(fields: [medicalRecordId], references: [id], onDelete: SetNull)
+
+  /// Generic result of an accepted-type malware scan. Uploads are quarantined
+  /// when this is not "clean".
+  scanStatus String @default("PENDING")
+
+  isDeleted Boolean   @default(false)
+  deletedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([healthcareCenterId, category, createdAt], map: "idx_document_center_category")
+  @@index([patientId, createdAt], map: "idx_document_patient")
+  @@index([scanStatus], map: "idx_document_scan")
+  @@map("medical_documents")
+}
+
+// ─── Audit log ────────────────────────────────────────────────────────────────
+
+/// Append-only. Never updated or deleted by application code; see
+/// src/lib/audit/log.ts.
+///
+/// `metadata` deliberately holds identifiers and counts, not clinical content:
+/// audit rows are read by admins and are not the place for a patient's symptoms.
+model AuditLog {
+  id String @id @default(cuid())
+
+  /// Who acted. Null for failed logins and other unauthenticated attempts, where
+  /// the attempted identity is recorded in `metadata.email` instead.
+  userId String?
+  user   User?   @relation("AuditActor", fields: [userId], references: [id], onDelete: SetNull)
+
+  healthcareCenterId String?
+  healthcareCenter   HealthcareCenter? @relation(fields: [healthcareCenterId], references: [id], onDelete: SetNull)
+
+  action   AuditAction
+  /// Table name of the affected entity, e.g. "Patient".
+  entity   String?
+  entityId String?
+
+  ipAddress String?
+  userAgent String?
+  /// True when the action failed (e.g. an authorization denial).
+  succeeded Boolean @default(true)
+  /// Short machine-readable reason, e.g. "role_denied". No free-text secrets.
+  reason    String?
+
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt], map: "idx_audit_user_time")
+  @@index([healthcareCenterId, createdAt], map: "idx_audit_center_time")
+  @@index([entity, entityId], map: "idx_audit_entity")
+  @@index([action, createdAt], map: "idx_audit_action")
+  @@map("audit_logs")
+}
+
+// ─── Settings ─────────────────────────────────────────────────────────────────
+
+/// Per-centre key/value configuration (currency, tax, cancellation policy,
+/// reminder offsets). Superadmin global settings use healthcareCenterId = null.
+model SystemSetting {
+  id  String @id @default(cuid())
+  key String
+
+  healthcareCenterId String?
+  healthcareCenter   HealthcareCenter? @relation(fields: [healthcareCenterId], references: [id], onDelete: Cascade)
+
+  value       String
+  valueType   SettingValueType @default(STRING)
+  /// For GROUP/BOOLEAN settings, e.g. public vs staff-only.
+  isPublic    Boolean          @default(false)
+  description String?
+  /// Settings the product requires; the admin UI renders these read-only.
+  isSystemKey Boolean          @default(false)
+
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([healthcareCenterId, key], name: "uq_setting_center_key")
+  @@index([healthcareCenterId], map: "idx_setting_center")
+  @@map("system_settings")
+}

@@ -1,0 +1,145 @@
+// Doctor availability and appointments.
+//
+// Recurring availability is stored as wall-clock "HH:mm" strings in the centre's
+// timezone, because that is what a rota actually is. Concrete bookings are stored
+// as absolute UTC DateTime. The slot engine (src/lib/scheduling/slots.ts) converts
+// between the two at booking time; nothing else needs to care.
+
+/// One working block in a doctor's week, e.g. Monday 09:00-13:00 with a
+/// 13:00-15:00 break. A doctor may have several blocks on the same weekday.
+model DoctorSchedule {
+  id       String @id @default(cuid())
+  code     String @unique
+  doctorId String
+  doctor   Doctor @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+
+  healthcareCenterId String
+  healthcareCenter   HealthcareCenter @relation(fields: [healthcareCenterId], references: [id], onDelete: Cascade)
+
+  dayOfWeek DayOfWeek
+
+  /// "HH:mm" wall-clock, centre-local. Not a timestamp.
+  startTime String
+  endTime   String
+
+  /// Optional single break inside the block, same format. A booking may not span it.
+  breakStartTime String?
+  breakEndTime   String?
+
+  /// Overrides Doctor.defaultSlotDurationMinutes for this block.
+  slotDurationMinutes   Int?
+  /// Overrides Doctor.maxAppointmentsPerDay. Summed across a doctor's blocks for
+  /// the day when checking capacity.
+  maxAppointmentsPerDay Int?
+
+  /// Optional window during which this rota is the one that applies, so a centre
+  /// can stage next month's schedule change.
+  effectiveFrom  DateTime?
+  effectiveUntil DateTime?
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([doctorId, dayOfWeek, isActive], map: "idx_schedule_doctor_day")
+  @@index([healthcareCenterId], map: "idx_schedule_center")
+  @@map("doctor_schedules")
+}
+
+/// Blocked-out time: approved leave, conferences, training. Overrides the weekly
+/// rota — the slot engine removes any slot that intersects one of these ranges.
+model DoctorLeave {
+  id       String @id @default(cuid())
+  code     String @unique
+  doctorId String
+  doctor   Doctor @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+
+  healthcareCenterId String
+  healthcareCenter   HealthcareCenter @relation(fields: [healthcareCenterId], references: [id], onDelete: Cascade)
+
+  /// Inclusive start date, exclusive end date (a one-day leave has the same value
+  /// in both only when combined with startInclusive/endExclusive flags below).
+  startDate DateTime
+  endDate   DateTime
+
+  type   LeaveType   @default(ANNUAL)
+  status LeaveStatus @default(PENDING)
+  reason String?
+  notes  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([doctorId, startDate, endDate], map: "idx_leave_doctor_range")
+  @@index([healthcareCenterId, status], map: "idx_leave_center_status")
+  @@map("doctor_leaves")
+}
+
+model Appointment {
+  id                String @id @default(cuid())
+  /// Human-facing sequential reference, e.g. "APT-2026-000123".
+  appointmentNumber String @unique
+
+  healthcareCenterId String
+  healthcareCenter   HealthcareCenter @relation(fields: [healthcareCenterId], references: [id], onDelete: Cascade)
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
+
+  doctorId String
+  doctor   Doctor @relation(fields: [doctorId], references: [id], onDelete: Restrict)
+
+  /// Snapshotted at booking time so the appointment keeps its department context
+  /// even if the doctor is later transferred.
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+
+  /// Absolute UTC instants. startAt is the appointment time the patient sees.
+  startAt DateTime
+  endAt   DateTime
+
+  type   AppointmentType   @default(IN_PERSON)
+  status AppointmentStatus @default(PENDING)
+
+  reason String?
+  notes  String?
+
+  paymentStatus AppointmentPaymentStatus @default(UNPAID)
+
+  /// Set when status is CANCELLED / NO_SHOW.
+  cancellationReason CancellationReason?
+  cancelledAt        DateTime?
+  cancelledById      String?
+
+  checkedInAt DateTime?
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  /// Who created it: the patient (self-booking), an admin, or a doctor.
+  bookedByUserId    String?
+  /// Previous appointment in a reschedule chain, so the history stays intact.
+  rescheduledFromId String?
+  rescheduledFrom   Appointment?  @relation("AppointmentReschedule", fields: [rescheduledFromId], references: [id], onDelete: SetNull)
+  rescheduledTo     Appointment[] @relation("AppointmentReschedule")
+
+  /// Optimistic-concurrency guard. Checked before every status transition.
+  version Int @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  medicalRecords MedicalRecord[]
+  prescriptions  Prescription[]
+  labRequests    LabRequest[]
+  invoices       Invoice[]
+  reviews        Review[]
+  documents      MedicalDocument[]
+  vitals         VitalSign[]
+
+  @@index([healthcareCenterId, startAt], map: "idx_appointment_center_start")
+  @@index([doctorId, startAt], map: "idx_appointment_doctor_start")
+  @@index([patientId, startAt], map: "idx_appointment_patient_start")
+  @@index([status], map: "idx_appointment_status")
+  @@index([doctorId, startAt, endAt], map: "idx_appointment_doctor_window")
+  @@map("appointments")
+}

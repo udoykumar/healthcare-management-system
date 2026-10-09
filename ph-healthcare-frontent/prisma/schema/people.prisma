@@ -1,0 +1,137 @@
+// Role-specific profile tables. A User row plus exactly one of these three rows
+// describes a person; the profile holds the clinical or operational attributes
+// that only make sense for that role.
+
+/// Non-clinical centre personnel (reception, nurse, technician, accountant).
+/// Staff are users whose role is ADMIN or DOCTOR-support; the profile carries
+/// their designation so centre staff are not conflated with clinicians.
+model Staff {
+  id     String @id @default(cuid())
+  code   String @unique
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  healthcareCenterId String
+  healthcareCenter   HealthcareCenter @relation(fields: [healthcareCenterId], references: [id], onDelete: Cascade)
+
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+
+  designation      String
+  /// Free-text permissions beyond the role, e.g. "billing", "lab".
+  responsibilities String[]
+  licenseNumber    String?
+  joinedAt         DateTime     @default(now())
+  employmentType   String?
+  status           RecordStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([healthcareCenterId], map: "idx_staff_center")
+  @@index([departmentId], map: "idx_staff_department")
+  @@map("staff")
+}
+
+model Department {
+  id          String  @id @default(cuid())
+  code        String  @unique
+  name        String
+  description String?
+
+  healthcareCenterId String
+  healthcareCenter   HealthcareCenter @relation(fields: [healthcareCenterId], references: [id], onDelete: Cascade)
+
+  headDoctorId String? @unique
+  headDoctor   Doctor? @relation("DepartmentHead", fields: [headDoctorId], references: [id], onDelete: SetNull)
+
+  /// Extension number / internal contact.
+  phone                  String?
+  email                  String?
+  location               String?
+  /// Consult fee override for this department; null falls back to the doctor's fee.
+  defaultConsultationFee Decimal? @db.Decimal(12, 2)
+
+  status    RecordStatus @default(ACTIVE)
+  sortOrder Int          @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  doctors       Doctor[]             @relation("DoctorDepartment")
+  staff         Staff[]
+  appointments  Appointment[]
+  labCategories LaboratoryCategory[]
+
+  @@unique([healthcareCenterId, name], name: "uq_department_center_name")
+  @@index([healthcareCenterId, status], map: "idx_department_center_status")
+  @@map("departments")
+}
+
+/// Clinical staff. Linked 1-1 to User; User holds identity/credentials, Doctor
+/// holds the clinical profile.
+model Doctor {
+  id     String @id @default(cuid())
+  code   String @unique
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  healthcareCenterId String
+  healthcareCenter   HealthcareCenter @relation(fields: [healthcareCenterId], references: [id], onDelete: Cascade)
+
+  departmentId String?
+  department   Department? @relation("DoctorDepartment", fields: [departmentId], references: [id], onDelete: SetNull)
+
+  /// Free-text specialisation list; Department is the organisational unit.
+  specialization  String?
+  qualification   String?
+  licenseNumber   String  @unique
+  /// Years of practice, kept as a number for sorting and filtering.
+  experienceYears Int     @default(0)
+  consultationFee Decimal @default(0) @db.Decimal(12, 2)
+
+  bio                        String?
+  addressLine1               String?
+  city                       String?
+  postalCode                 String?
+  country                    String?
+  dateOfBirth                DateTime?
+  gender                     Gender?
+  bloodGroup                 BloodGroup?
+  profilePhotoUrl            String?
+  /// Default slot length in minutes; a specific schedule row may override it.
+  defaultSlotDurationMinutes Int         @default(20)
+  /// Hard cap on same-day bookings regardless of schedule, guards against a
+  /// doctor being overbooked when they widen their slots.
+  maxAppointmentsPerDay      Int         @default(24)
+  /// How far ahead patients may book.
+  bookingWindowDays          Int         @default(60)
+  /// Minimum notice in hours for a non-emergency booking.
+  minNoticeHours             Int         @default(2)
+
+  /// Aggregate rating, recomputed whenever a review is published or moderated so
+  /// doctor listings never need an aggregate query.
+  ratingAverage Decimal @default(0) @db.Decimal(3, 2)
+  ratingCount   Int     @default(0)
+
+  status RecordStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  headOfDepartments Department[]     @relation("DepartmentHead")
+  schedules         DoctorSchedule[]
+  leaves            DoctorLeave[]
+  appointments      Appointment[]
+  medicalRecords    MedicalRecord[]
+  diagnoses         Diagnosis[]
+  prescriptions     Prescription[]
+  labRequests       LabRequest[]
+  invoices          Invoice[]
+  reviews           Review[]
+
+  @@index([healthcareCenterId, status], map: "idx_doctor_center_status")
+  @@index([departmentId], map: "idx_doctor_department")
+  @@index([licenseNumber], map: "idx_doctor_license")
+  @@map("doctors")
+}

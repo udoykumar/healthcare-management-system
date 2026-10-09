@@ -1,0 +1,315 @@
+// Clinical records: consultations, observations, diagnoses, prescribing.
+//
+// Clinical rows are never hard-deleted. Corrections are appended and the
+// superseded row is flagged, because a medical record that can silently vanish is
+// a compliance problem, not just a UX one.
+
+// ─── Consultation record ──────────────────────────────────────────────────────
+
+model MedicalRecord {
+  id   String @id @default(cuid())
+  code String @unique
+
+  healthcareCenterId String
+  healthcareCenter   HealthcareCenter @relation(fields: [healthcareCenterId], references: [id], onDelete: Cascade)
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
+
+  /// The treating clinician. Immutable once written — see
+  /// src/lib/authz/clinical.ts, which refuses edits from a doctor who is not this.
+  doctorId String
+  doctor   Doctor @relation(fields: [doctorId], references: [id], onDelete: Restrict)
+
+  /// Optional: a consultation can be documented without a booked appointment
+  /// (walk-in). When present it must belong to the same patient and doctor.
+  appointmentId String?
+  appointment   Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+
+  visitDate DateTime @default(now())
+
+  chiefComplaint String?
+  symptoms       String?
+  examination    String?
+  treatmentPlan  String?
+  clinicalNotes  String?
+  adviceGiven    String?
+
+  followUpDate DateTime?
+  /// Soft-delete for a record created in error. Kept separate from cascade so the
+  /// prescriptions and lab requests attached to it survive.
+  isVoided     Boolean   @default(false)
+  voidedAt     DateTime?
+  voidedReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  vitals        VitalSign[]
+  diagnoses     Diagnosis[]
+  prescriptions Prescription[]
+  labRequests   LabRequest[]
+  documents     MedicalDocument[]
+
+  @@index([patientId, visitDate], map: "idx_record_patient_visit")
+  @@index([doctorId, visitDate], map: "idx_record_doctor_visit")
+  @@index([healthcareCenterId, visitDate], map: "idx_record_center_visit")
+  @@map("medical_records")
+}
+
+/// One set of observations for a visit. Kept as its own row rather than columns
+/// on MedicalRecord so a patient can have several readings per visit.
+model VitalSign {
+  id   String @id @default(cuid())
+  code String @unique
+
+  medicalRecordId String
+  medicalRecord   MedicalRecord @relation(fields: [medicalRecordId], references: [id], onDelete: Cascade)
+
+  appointmentId String?
+  appointment   Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+
+  measuredAt DateTime @default(now())
+
+  /// Stored as strings because units vary by centre and by device, and rounding
+  /// to Int would lose "5.5 mmol/L". Parsed and range-checked in the Zod layer.
+  bloodPressureSystolic  String?
+  bloodPressureDiastolic String?
+  heartRate              String?
+  temperature            String?
+  respiratoryRate        String?
+  oxygenSaturation       String?
+  weight                 String?
+  height                 String?
+  bmi                    Decimal? @db.Decimal(5, 2)
+
+  notes      String?
+  /// Observations flagged by the recorder as outside the expected range.
+  isAbnormal Boolean @default(false)
+
+  recordedById String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([medicalRecordId], map: "idx_vital_record")
+  @@map("vital_signs")
+}
+
+model Diagnosis {
+  id   String @id @default(cuid())
+  code String @unique
+
+  healthcareCenterId String
+  healthcareCenter   HealthcareCenter @relation(fields: [healthcareCenterId], references: [id], onDelete: Cascade)
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
+
+  medicalRecordId String
+  medicalRecord   MedicalRecord @relation(fields: [medicalRecordId], references: [id], onDelete: Cascade)
+
+  doctorId String
+  doctor   Doctor @relation(fields: [doctorId], references: [id], onDelete: Restrict)
+
+  type        DiagnosisType @default(PRIMARY)
+  /// Human-readable condition name.
+  description String
+  /// Optional ICD-10 code. Free text because code sets vary by country.
+  icd10Code   String?
+  notes       String?
+
+  /// Set when a later entry supersedes this one; the row is retained.
+  isSuperseded   Boolean    @default(false)
+  /// Unique: one replacement per superseded row, not a list.
+  supersededById String?    @unique
+  supersededBy   Diagnosis? @relation("DiagnosisSupersede", fields: [supersededById], references: [id], onDelete: SetNull)
+  supersedes     Diagnosis? @relation("DiagnosisSupersede")
+
+  diagnosedAt DateTime  @default(now())
+  resolvedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([patientId, diagnosedAt], map: "idx_diagnosis_patient")
+  @@index([medicalRecordId], map: "idx_diagnosis_record")
+  @@index([healthcareCenterId], map: "idx_diagnosis_center")
+  @@map("diagnoses")
+}
+
+// ─── Prescribing ──────────────────────────────────────────────────────────────
+
+model Medicine {
+  id   String @id @default(cuid())
+  code String @unique
+
+  healthcareCenterId String
+  healthcareCenter   HealthcareCenter @relation(fields: [healthcareCenterId], references: [id], onDelete: Cascade)
+
+  name                 String
+  genericName          String?
+  brandName            String?
+  category             String?
+  manufacturer         String?
+  description          String?
+  dosageForm           DosageForm @default(TABLET)
+  /// e.g. "500 mg". Text, not a number: strengths are not comparable as decimals.
+  strength             String?
+  /// Lower bound that triggers the low-stock alert.
+  minimumStockLevel    Int        @default(0)
+  unitPrice            Decimal    @default(0) @db.Decimal(12, 2)
+  /// Non-stocked, e.g. items dispensed from an external pharmacy.
+  isPrescribable       Boolean    @default(true)
+  requiresPrescription Boolean    @default(true)
+
+  status RecordStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Stock is held per batch so expiry can be tracked; `totalStock` is derived by
+  /// summing these rows (see src/lib/inventory/stock.ts). Storing a running
+  /// total on Medicine as well would give two sources of truth.
+  stockBatches      MedicineStock[]
+  prescriptionItems PrescriptionItem[]
+  invoiceItems      InvoiceItem[]
+
+  @@unique([healthcareCenterId, name, strength], name: "uq_medicine_center_name_strength")
+  @@index([healthcareCenterId, status], map: "idx_medicine_center_status")
+  @@index([name], map: "idx_medicine_name")
+  @@map("medicines")
+}
+
+/// A physical batch of a medicine: quantity on hand and its expiry date.
+model MedicineStock {
+  id   String @id @default(cuid())
+  code String @unique
+
+  medicineId String
+  medicine   Medicine @relation(fields: [medicineId], references: [id], onDelete: Cascade)
+
+  healthcareCenterId String
+  healthcareCenter   HealthcareCenter @relation(fields: [healthcareCenterId], references: [id], onDelete: Cascade)
+
+  batchNumber String?
+  /// Units on hand. Never negative; movements are validated in the service layer.
+  quantity    Int       @default(0)
+  /// ISO date. Drives the expiry alert.
+  expiresOn   DateTime?
+  unitPrice   Decimal?  @db.Decimal(12, 2)
+  supplier    String?
+  receivedAt  DateTime  @default(now())
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  movements StockMovement[]
+
+  @@index([medicineId, isActive], map: "idx_stock_medicine")
+  @@index([healthcareCenterId, expiresOn], map: "idx_stock_center_expiry")
+  @@map("medicine_stock")
+}
+
+/// Append-only ledger of stock changes. MedicineStock.quantity is the balance;
+/// these rows are the reason for it, which is what makes a discrepancy auditable.
+model StockMovement {
+  id   String @id @default(cuid())
+  code String @unique
+
+  stockBatchId String
+  stockBatch   MedicineStock @relation(fields: [stockBatchId], references: [id], onDelete: Cascade)
+
+  /// PURCHASE, DISPENSE, RETURN, ADJUSTMENT, EXPIRED
+  type          String
+  /// Signed: positive adds stock, negative removes it.
+  quantity      Int
+  balanceAfter  Int
+  reason        String?
+  referenceId   String?
+  referenceType String?
+
+  performedById String?
+  performedAt   DateTime @default(now())
+
+  @@index([stockBatchId, performedAt], map: "idx_stock_movement_batch")
+  @@map("stock_movements")
+}
+
+model Prescription {
+  id   String @id @default(cuid())
+  code String @unique
+
+  healthcareCenterId String
+  healthcareCenter   HealthcareCenter @relation(fields: [healthcareCenterId], references: [id], onDelete: Cascade)
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Restrict)
+
+  doctorId String
+  doctor   Doctor @relation(fields: [doctorId], references: [id], onDelete: Restrict)
+
+  medicalRecordId String
+  medicalRecord   MedicalRecord @relation(fields: [medicalRecordId], references: [id], onDelete: Cascade)
+
+  appointmentId String?
+  appointment   Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+
+  status PrescriptionStatus @default(DRAFT)
+
+  /// Free-text summary of what was prescribed, shown at the top of the printout.
+  diagnosisSummary String?
+  instructions     String?
+  /// Doctor's general advice printed under the medicine list.
+  generalAdvice    String?
+  followUpDate     DateTime?
+
+  prescribedAt DateTime  @default(now())
+  issuedAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items PrescriptionItem[]
+
+  @@index([patientId, prescribedAt], map: "idx_prescription_patient")
+  @@index([doctorId, prescribedAt], map: "idx_prescription_doctor")
+  @@index([healthcareCenterId, status], map: "idx_prescription_center_status")
+  @@map("prescriptions")
+}
+
+model PrescriptionItem {
+  id   String @id @default(cuid())
+  code String @unique
+
+  prescriptionId String
+  prescription   Prescription @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+
+  /// Nullable so a prescription line survives a medicine being withdrawn from the
+  /// catalogue. The name below is the snapshot of what was actually prescribed.
+  medicineId String?
+  medicine   Medicine? @relation(fields: [medicineId], references: [id], onDelete: SetNull)
+
+  /// Snapshot of the medicine at prescribing time. Prescriptions must still read
+  /// correctly after the catalogue is edited.
+  medicineName  String
+  dosage        String
+  frequency     MedicationFrequency
+  frequencyText String?
+  duration      String
+  route         MedicationRoute     @default(ORAL)
+  instructions  String?
+  /// Quantity to dispense. Stock is decremented on issue, not on save.
+  quantity      Int?
+  /// Set when dispensed, so an invoice line can be produced.
+  dispensedAt   DateTime?
+
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([prescriptionId], map: "idx_prescription_item_prescription")
+  @@index([medicineId], map: "idx_prescription_item_medicine")
+  @@map("prescription_items")
+}

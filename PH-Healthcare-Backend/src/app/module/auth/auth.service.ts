@@ -11,10 +11,13 @@ import { prisma } from "../../lib/prisma";
 import { jwtUtils } from "../../utils/jwt";
 import ejs from "ejs";
 import type {
+  IForgotPayload,
   IGoogleLogin,
   ILoginUserPayload,
   IRegisterPatientPayload,
   IRequestUser,
+  IResetPayload,
+  IVerifyEmailPayload,
 } from "./auth.interface";
 // biome-ignore lint/style/useImportType: <useImportType>
 import { TokenPayload } from "google-auth-library";
@@ -24,9 +27,10 @@ import { redisClient } from "../../lib/redis";
 import { error } from "console";
 import { transporter } from "../../lib/nodemailer";
 import path from "path";
+import { Prisma } from "../../../generated/prisma/client";
 
 const registerPatient = async (payload: IRegisterPatientPayload) => {
-  const { name, password } = payload;
+  const { name, password, patient: patientData } = payload;
 
   if (!name || typeof name !== "string" || name.length < 3) {
     throw new Error("name is required");
@@ -46,48 +50,51 @@ const registerPatient = async (payload: IRegisterPatientPayload) => {
     Number(config.bcrypt_salt_rounds),
   );
 
-  const createdUser = await prisma.user.create({
-    data: {
-      name,
-      email,
-      password: hashedPassword,
-      role: Role.PATIENT,
-      status: UserStatus.ACTIVE,
-      emailVerified: false,
-      patient: {
-        create: { name, email },
+  const otp = crypto.randomInt(100000, 1000000);
+  const otpKey = `patient-registation-otp:${email}`;
+  const expiratinoSecend = 60 * 5;
+  await redisClient.set(otpKey, otp, {
+    expiration: {
+      type: "EX",
+      value: expiratinoSecend,
+    },
+  });
+  const patientRegistaionKey = `patient-registation-data:${email}`;
+  const radisUserDataPayload = {
+    name,
+    email,
+    password: hashedPassword,
+    patient: patientData,
+  };
+  await redisClient.set(
+    patientRegistaionKey,
+    JSON.stringify(radisUserDataPayload),
+    {
+      expiration: {
+        type: "EX",
+        value: expiratinoSecend,
       },
     },
-    omit: { password: true },
-    include: { patient: true },
+  );
+
+  const templatePath = path.join(
+    process.cwd(),
+    "src/app/template/registration-user-otp.ejs",
+  );
+  const html = await ejs.renderFile(templatePath, {
+    name: name,
+    email: config.sender_email,
+    otp: otp,
+    expiratinoSecend: expiratinoSecend / 60,
   });
 
-  const { patient, ...user } = createdUser;
-  const jwtPayload = {
-    userId: user.id,
-    name: user.name,
-    email: user.email,
-    role: user.role,
-  };
-
-  const accessToken = jwtUtils.createToken(
-    jwtPayload,
-    config.jwt_access_secret,
-    config.jwt_access_expires_in as SignOptions,
-  );
-
-  const refreshToken = jwtUtils.createToken(
-    jwtPayload,
-    config.jwt_refresh_secret,
-    config.jwt_refresh_expires_in as SignOptions,
-  );
-
-  return {
-    user,
-    patient,
-    accessToken,
-    refreshToken,
-  };
+  await transporter.sendMail({
+    from: config.sender_email,
+    to: email,
+    subject: "Email Verify",
+    // text: `your otp ${otp}`,
+    html,
+  });
 };
 
 const loginUser = async (payload: ILoginUserPayload) => {
@@ -302,6 +309,22 @@ const googleLogin = async (payload: IGoogleLogin) => {
           },
         },
       });
+
+      const templatePath = path.join(
+        process.cwd(),
+        "src/app/template/welcome-emali.ejs",
+      );
+
+      const html = await ejs.renderFile(templatePath, {
+        name: googleIdTokenPayload.name,
+      });
+
+      await transporter.sendMail({
+        from: config.sender_email,
+        to: googleIdTokenPayload.email,
+        subject: "Welcome to Healthcare",
+        html,
+      });
     }
   }
 
@@ -341,7 +364,7 @@ const googleLogin = async (payload: IGoogleLogin) => {
   };
 };
 
-const forgotPassword = async (payload: any) => {
+const forgotPassword = async (payload: IForgotPayload) => {
   const { email } = payload;
   const isUserExist = await prisma.user.findUnique({
     where: {
@@ -392,7 +415,7 @@ const forgotPassword = async (payload: any) => {
     html,
   });
 };
-const resetPassword = async (payload: any) => {
+const resetPassword = async (payload: IResetPayload) => {
   const { email, otp, newPassword } = payload;
   const isUserExist = await prisma.user.findUnique({
     where: {
@@ -459,8 +482,114 @@ const resetPassword = async (payload: any) => {
   });
 };
 
+const verifyEmail = async (payload: IVerifyEmailPayload) => {
+  const otp = payload.otp;
+  const email = payload.email.trim().toLowerCase();
+  const isUserExist = await prisma.user.findUnique({
+    where: { email },
+  });
+
+  if (isUserExist?.status === "BLOCKED") {
+    throw new Error("User is Blocked");
+  }
+
+  if (isUserExist?.emailVerified) {
+    throw new Error("Emali Already Verified");
+  }
+
+  if (isUserExist?.isDeleted || isUserExist?.status === "DELETED") {
+    throw new Error("User is Deleted");
+  }
+
+  const otpKey = `patient-registation-otp:${email}`;
+  const redisOtp = await redisClient.get(otpKey);
+  await redisClient.del(otpKey);
+  if (!redisOtp) {
+    throw new Error("Redis otp not found");
+  }
+  if (redisOtp !== otp) {
+    throw new Error("OTP don't match");
+  }
+  const patientRegistaionKey = `patient-registation-data:${email}`;
+
+  const patientRegistationdata = await redisClient.get(patientRegistaionKey);
+  if (!patientRegistationdata) {
+    throw new Error("Patient Data not found");
+  }
+
+  const patientDataPayload: IRegisterPatientPayload = JSON.parse(
+    patientRegistationdata,
+  );
+
+  const createdUser = await prisma.user.create({
+    data: {
+      name: patientDataPayload.name,
+      email: patientDataPayload.email,
+      password: patientDataPayload.password,
+      role: Role.PATIENT,
+      status: UserStatus.ACTIVE,
+      emailVerified: true,
+      patient: {
+        create: {
+          name: patientDataPayload.name,
+          email: patientDataPayload.email,
+          contactNumber: patientDataPayload?.patient?.contactNumber || "",
+        },
+      },
+    },
+    omit: { password: true },
+    include: { patient: true },
+  });
+
+  await redisClient.del(patientRegistaionKey);
+
+  const templatePath = path.join(
+    process.cwd(),
+    "src/app/template/welcome-emali.ejs",
+  );
+
+  const html = await ejs.renderFile(templatePath, {
+    name: createdUser.name,
+  });
+
+  await transporter.sendMail({
+    from: config.sender_email,
+    to: createdUser.email,
+    subject: "Welcome to Healthcare",
+    html,
+  });
+
+  const { patient, ...user } = createdUser;
+  const jwtPayload = {
+    userId: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+  };
+
+  const accessToken = jwtUtils.createToken(
+    jwtPayload,
+    config.jwt_access_secret,
+    config.jwt_access_expires_in as SignOptions,
+  );
+
+  const refreshToken = jwtUtils.createToken(
+    jwtPayload,
+    config.jwt_refresh_secret,
+    config.jwt_refresh_expires_in as SignOptions,
+  );
+
+  return {
+    user,
+    patient,
+    accessToken,
+    refreshToken,
+  };
+};
+
 export const AuthService = {
   registerPatient,
+  verifyEmail,
   loginUser,
   getMe,
   refreshToken,

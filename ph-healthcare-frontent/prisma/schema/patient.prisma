@@ -1,0 +1,136 @@
+// Patient demographics plus the clinical background that must be on screen
+// before a consultation starts.
+//
+// "Current medications" is deliberately NOT a column here: the single source of
+// truth is the medication the doctor actually prescribed
+// (src/lib/clinical/active-medications.ts derives it from PrescriptionItem).
+
+model Patient {
+  id     String @id @default(cuid())
+  code   String @unique
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  healthcareCenterId String
+  healthcareCenter   HealthcareCenter @relation(fields: [healthcareCenterId], references: [id], onDelete: Cascade)
+
+  firstName   String
+  lastName    String
+  dateOfBirth DateTime
+  gender      Gender
+  bloodGroup  BloodGroup @default(UNKNOWN)
+
+  /// Snapshot of the contact details from the linked User row, denormalised so
+  /// clinical lists can render and sort without joining users.
+  email String?
+  phone String?
+
+  addressLine1 String?
+  addressLine2 String?
+  city         String?
+  state        String?
+  postalCode   String?
+  country      String  @default("Bangladesh")
+
+  emergencyContactName         String?
+  emergencyContactPhone        String?
+  emergencyContactRelationship ContactRelationship?
+
+  profilePhotoUrl String?
+
+  familyMedicalHistory String?
+  notes                String?
+
+  insuranceProvider   String?
+  insuranceNumber     String?
+  insuranceGroup      String?
+  /// Policy validity end; overdue cover is surfaced on the patient profile.
+  insuranceValidUntil DateTime?
+
+  registeredAt DateTime     @default(now())
+  status       RecordStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  allergies      PatientAllergy[]
+  conditions     PatientCondition[]
+  surgeries      PatientSurgery[]
+  appointments   Appointment[]
+  medicalRecords MedicalRecord[]
+  diagnoses      Diagnosis[]
+  prescriptions  Prescription[]
+  labRequests    LabRequest[]
+  labResults     LabResult[]
+  invoices       Invoice[]
+  payments       Payment[]
+  documents      MedicalDocument[]
+  reviews        Review[]
+
+  @@index([healthcareCenterId, status], map: "idx_patient_center_status")
+  @@index([lastName, firstName], map: "idx_patient_name")
+  @@index([phone], map: "idx_patient_phone")
+  @@index([email], map: "idx_patient_email")
+  @@index([registeredAt], map: "idx_patient_registered")
+  @@map("patients")
+}
+
+/// Structured rather than a free-text blob, because "does this patient have a
+/// penicillin allergy" is a question the booking and prescribing screens must be
+/// able to ask before writing anything.
+model PatientAllergy {
+  id        String  @id @default(cuid())
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  /// Drug, food, or environmental agent.
+  substance    String
+  category     String?
+  reaction     String?
+  severity     Severity @default(MILD)
+  notes        String?
+  /// Set when a clinician stops considering this allergy current.
+  isActive     Boolean  @default(true)
+  recordedById String?
+  recordedAt   DateTime @default(now())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([patientId, isActive], map: "idx_patient_allergy_patient")
+  @@map("patient_allergies")
+}
+
+model PatientCondition {
+  id        String  @id @default(cuid())
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  name        String
+  icd10Code   String?
+  /// ACTIVE / RESOLVED / CHRONIC — free-text-ish but constrained in validation.
+  status      String    @default("ACTIVE")
+  diagnosedOn DateTime?
+  notes       String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([patientId, status], map: "idx_patient_condition_patient")
+  @@map("patient_conditions")
+}
+
+model PatientSurgery {
+  id        String  @id @default(cuid())
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  procedure   String
+  performedOn DateTime
+  hospital    String?
+  surgeon     String?
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([patientId, performedOn], map: "idx_patient_surgery_patient")
+  @@map("patient_surgeries")
+}
